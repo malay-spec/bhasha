@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bhasha Setu – Speech to English (Offline)</title>
+<meta name="theme-color" content="#0f4c5c">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#1d2b32; --muted:#64737a; --brand:#0f4c5c; --accent:#f4a259; --danger:#b23a48; --line:#e3e0d8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#11181b; --card:#1a2428; --ink:#e8eef0; --muted:#94a5ab; --line:#2a3a40; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:14px 18px; display:flex; align-items:center; gap:10px; }
+  header img { width:34px; height:34px; border-radius:8px; }
+  header h1 { font-size:1.15rem; margin:0; } header small { opacity:.8; display:block; font-size:.78rem; }
+  main { max-width:820px; margin:0 auto; padding:14px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:560px){ .grid { grid-template-columns:1fr; } }
+  label { font-size:.8rem; color:var(--muted); display:block; margin-bottom:4px; }
+  select, button { font:inherit; }
+  select { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  .toggles { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .chip { display:flex; align-items:center; gap:6px; padding:7px 12px; border:1px solid var(--line); border-radius:999px; cursor:pointer; font-size:.9rem; user-select:none; }
+  .chip input { accent-color:var(--brand); }
+  .mic-wrap { display:flex; flex-direction:column; align-items:center; gap:10px; }
+  #micBtn { width:96px; height:96px; border-radius:50%; border:none; background:var(--brand); color:#fff; cursor:pointer; box-shadow:0 6px 18px rgba(15,76,92,.35); transition:transform .1s; }
+  #micBtn:active { transform:scale(.96); } #micBtn:disabled { opacity:.5; cursor:not-allowed; }
+  #micBtn.on { background:var(--danger); animation:pulse 1.4s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(178,58,72,.5)} 70%{box-shadow:0 0 0 18px rgba(178,58,72,0)} 100%{box-shadow:0 0 0 0 rgba(178,58,72,0)} }
+  #micBtn svg { width:40px; height:40px; }
+  .meter { width:220px; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .meter > div { height:100%; width:0; background:var(--accent); transition:width .08s; }
+  #status { font-size:.9rem; color:var(--muted); text-align:center; min-height:1.4em; }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; display:none; width:100%; }
+  .bar > div { height:100%; width:0; background:var(--brand); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; justify-content:space-between; align-items:center; }
+  .btn { padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  .btn.primary { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .btn.danger { color:var(--danger); }
+  #log { display:grid; gap:10px; margin-top:10px; max-height:55vh; overflow:auto; }
+  .entry { border-left:4px solid var(--accent); padding:6px 10px; background:rgba(244,162,89,.07); border-radius:0 10px 10px 0; }
+  .entry .meta { font-size:.75rem; color:var(--muted); display:flex; justify-content:space-between; gap:8px; }
+  .entry .en { font-size:1.05rem; }
+  .entry .orig { font-size:.9rem; color:var(--muted); margin-top:2px; }
+  .entry.pending .en { color:var(--muted); font-style:italic; }
+  .speak { border:none; background:none; cursor:pointer; color:var(--brand); font-size:.8rem; padding:0; }
+  .hide-text .entry .en { display:none; } .hide-orig .entry .orig { display:none; }
+  .empty { color:var(--muted); text-align:center; padding:18px; font-size:.9rem; }
+  .note { font-size:.8rem; color:var(--muted); }
+  input[type=file] { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <img src="icons/icon-192.png" alt="">
+  <div><h1>Bhasha Setu</h1><small>Regional speech → English · runs on your device</small></div>
+</header>
+
+<main>
+  <section class="card">
+    <div class="grid">
+      <div>
+        <label for="lang">Spoken language</label>
+        <select id="lang">
+          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
+          <option value="marathi">Marathi (मराठी)</option>
+          <option value="tamil">Tamil (தமிழ்)</option>
+          <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+          <option value="chinese">Mandarin (普通话)</option>
+          <option value="bengali">Bengali (বাংলা)</option>
+          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="malayalam">Malayalam (മലയാളം)</option>
+          <option value="hindi">Hindi (हिन्दी)</option>
+          <option value="auto">Auto-detect</option>
+        </select>
+      </div>
+      <div>
+        <label for="model">Offline model (downloaded once)</label>
+        <select id="model">
+          <option value="onnx-community/whisper-tiny">Tiny · ~40 MB · fastest, rough</option>
+          <option value="onnx-community/whisper-base" selected>Base · ~80 MB · balanced</option>
+          <option value="onnx-community/whisper-small">Small · ~250 MB · best accuracy</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1">
+        <label for="mode">Translation engine</label>
+        <select id="mode">
+          <option value="fast">Fast · speech model translates directly (best for phones)</option>
+          <option value="accurate">Accurate · speech model + NLLB-200 translator (+~900 MB, best on laptops)</option>
+        </select>
+      </div>
+    </div>
+    <div class="toggles">
+      <label class="chip"><input type="checkbox" id="optText" checked> Show English text</label>
+      <label class="chip"><input type="checkbox" id="optSpeak"> Speak English aloud</label>
+      <label class="chip"><input type="checkbox" id="optOrig"> Also show original language</label>
+    </div>
+  </section>
+
+  <section class="card mic-wrap">
+    <button id="micBtn" aria-label="Start listening" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+    </button>
+    <div class="meter"><div id="level"></div></div>
+    <div class="bar" id="bar"><div id="barFill"></div></div>
+    <div id="status">Preparing…</div>
+    <div class="row" style="justify-content:center">
+      <button class="btn" id="fileBtn">Translate an audio file</button>
+      <input type="file" id="fileIn" accept="audio/*,video/*">
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <strong>Conversation</strong>
+      <div class="row">
+        <button class="btn" id="copyBtn">Copy</button>
+        <button class="btn" id="dlBtn">Download .txt</button>
+        <button class="btn danger" id="clearBtn">Delete all</button>
+      </div>
+    </div>
+    <div id="log"></div>
+    <p class="note">Conversations are saved only on this device and stay until you delete them.</p>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STORE = 'bhasha-setu-log-v1', PREFS = 'bhasha-setu-prefs-v1';
+const SR = 16000;
+
+// ---------- persistence ----------
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let entries = store.get(STORE, []);
+const prefs = store.get(PREFS, {});
+for (const [id, key] of [['lang','lang'],['model','model'],['mode','mode']]) if (prefs[key]) $(id).value = prefs[key];
+for (const id of ['optText','optSpeak','optOrig']) if (id in prefs) $(id).checked = prefs[id];
+function savePrefs() {
+  store.set(PREFS, { lang:$('lang').value, model:$('model').value, mode:$('mode').value,
+    optText:$('optText').checked, optSpeak:$('optSpeak').checked, optOrig:$('optOrig').checked });
+  applyView();
+}
+['lang','optText','optSpeak','optOrig'].forEach(id => $(id).addEventListener('change', savePrefs));
+['model','mode'].forEach(id => $(id).addEventListener('change', () => { savePrefs(); loadModel(); }));
+
+// ---------- rendering ----------
+const LANG_LABEL = (v) => $('lang').querySelector(`option[value="${v}"]`)?.textContent.split(' (')[0] || v;
+function applyView() {
+  $('log').classList.toggle('hide-text', !$('optText').checked);
+  $('log').classList.toggle('hide-orig', !$('optOrig').checked);
+}
+function render() {
+  const log = $('log');
+  if (!entries.length) { log.innerHTML = '<div class="empty">Tap the mic and start speaking. English will appear here.</div>'; return; }
+  log.innerHTML = '';
+  for (const e of entries) {
+    const d = document.createElement('div');
+    d.className = 'entry' + (e.pending ? ' pending' : '');
+    d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}</span>
+      ${e.pending ? '' : '<button class="speak">🔊 Play</button>'}</div>
+      <div class="en"></div><div class="orig"></div>`;
+    d.querySelector('.en').textContent = e.pending ? 'Translating…' : (e.en || '(no speech recognised)');
+    d.querySelector('.orig').textContent = (e.orig && e.orig !== e.en) ? e.orig : '';
+    d.querySelector('.speak')?.addEventListener('click', () => speak(e.en, true));
+    log.appendChild(d);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+function persist() { store.set(STORE, entries.filter(e => !e.pending)); }
+
+// ---------- English speech output (on-device voices) ----------
+let enVoice = null;
+function pickVoice() {
+  const v = speechSynthesis.getVoices().filter(v => v.lang?.toLowerCase().startsWith('en'));
+  enVoice = v.find(x => x.localService && /en-IN/i.test(x.lang)) || v.find(x => x.localService) ||
+            v.find(x => /en-IN/i.test(x.lang)) || v[0] || null;
+}
+if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+function speak(text, force) {
+  if (!text || !('speechSynthesis' in window) || (!force && !$('optSpeak').checked)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  if (enVoice) u.voice = enVoice; u.lang = enVoice?.lang || 'en-IN'; u.rate = 1;
+  speechSynthesis.speak(u);
+}
+
+// ---------- worker / model ----------
+const worker = new Worker('worker.js', { type: 'module' });
+let ready = false, busy = false, nextId = 1, loadId = 0;
+const queue = [];
+function setStatus(t) { $('status').textContent = t; }
+function loadModel() {
+  ready = false; $('micBtn').disabled = true;
+  $('bar').style.display = 'block'; $('barFill').style.width = '0%';
+  worker.postMessage({ type: 'load', loadId: ++loadId, model: $('model').value, mode: $('mode').value });
+}
+worker.onmessage = ({ data }) => {
+  if (data.type === 'status') setStatus(data.text);
+  else if (data.type === 'progress') { $('barFill').style.width = data.pct + '%'; setStatus(`Downloading ${data.label} (${data.mb} MB)… ${data.pct}% · one-time`); }
+  else if (data.type === 'ready') {
+    if (data.loadId !== loadId) return; // an older load finished; a newer one is still running
+    ready = true; $('micBtn').disabled = false; $('bar').style.display = 'none';
+    setStatus(`Ready · works offline · ${data.mode === 'accurate' ? 'Accurate' : 'Fast'} mode on ${data.device}. Tap the mic.`); pump();
+  } else if (data.type === 'result' || data.type === 'error') {
+    const e = entries.find(x => x.id === data.id);
+    if (e) {
+      e.pending = false;
+      if (data.type === 'result') { e.en = data.english; e.orig = data.original; e.ms = data.ms; speak(e.en); }
+      else e.en = '⚠ ' + data.text;
+      if (!e.en) entries = entries.filter(x => x !== e);
+      persist(); render();
+      if (!listening && !queue.length) setStatus('Done. Tap the mic or translate another file.');
+    }
+    if (data.type === 'error' && !e) setStatus('Error: ' + data.text);
+    busy = false; pump();
+  }
+};
+function enqueue(audio) {
+  const id = nextId++;
+  entries.push({ id, t: Date.now(), lang: $('lang').value, pending: true });
+  render();
+  queue.push({ id, audio });
+  pump();
+}
+function pump() {
+  if (!ready || busy || !queue.length) return;
+  busy = true;
+  const { id, audio } = queue.shift();
+  worker.postMessage({ type: 'process', id, audio, language: $('lang').value, mode: $('mode').value, showOriginal: $('optOrig').checked }, [audio.buffer]);
+}
+
+// ---------- audio helpers ----------
+function resample(input, fromRate) {
+  if (fromRate === SR) return input;
+  const ratio = fromRate / SR, out = new Float32Array(Math.floor(input.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const s = Math.floor(i * ratio), e = Math.min(Math.floor((i + 1) * ratio), input.length);
+    let sum = 0; for (let j = s; j < e; j++) sum += input[j];
+    out[i] = sum / Math.max(1, e - s);
+  }
+  return out;
+}
+function concat(chunks) {
+  const n = chunks.reduce((a, c) => a + c.length, 0), out = new Float32Array(n);
+  let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out;
+}
+
+// ---------- live mic with voice-activity segmentation ----------
+let ctx, stream, proc, src, wakeLock, listening = false;
+const VAD = { minSpeech: 0.6, silenceEnd: 0.8, maxSeg: 14, preRoll: 0.3 };
+let seg = [], segSec = 0, silenceSec = 0, inSpeech = false, noise = 0.005, preRoll = [];
+
+async function startMic() {
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  src = ctx.createMediaStreamSource(stream);
+  proc = ctx.createScriptProcessor(4096, 1, 1);
+  const frameSec = 4096 / ctx.sampleRate;
+  proc.onaudioprocess = (ev) => {
+    const x = new Float32Array(ev.inputBuffer.getChannelData(0));
+    let rms = 0; for (let i = 0; i < x.length; i++) rms += x[i] * x[i]; rms = Math.sqrt(rms / x.length);
+    $('level').style.width = Math.min(100, rms * 900) + '%';
+    const thr = Math.max(0.012, noise * 3);
+    const voiced = rms > thr;
+    if (!voiced && !inSpeech) noise = noise * 0.95 + rms * 0.05;
+    if (voiced) {
+      if (!inSpeech) { inSpeech = true; seg = [...preRoll]; segSec = preRoll.length * frameSec; }
+      silenceSec = 0;
+    } else if (inSpeech) silenceSec += frameSec;
+    if (inSpeech) {
+      seg.push(x); segSec += frameSec;
+      if (silenceSec >= VAD.silenceEnd || segSec >= VAD.maxSeg) flush(frameSec);
+    } else {
+      preRoll.push(x); if (preRoll.length * frameSec > VAD.preRoll) preRoll.shift();
+    }
+  };
+  src.connect(proc); proc.connect(ctx.destination);
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+}
+function flush() {
+  const speechSec = segSec - silenceSec;
+  const audio = seg.length ? resample(concat(seg), ctx.sampleRate) : null;
+  seg = []; segSec = 0; silenceSec = 0; inSpeech = false;
+  if (audio && speechSec >= VAD.minSpeech) enqueue(audio);
+}
+function stopMic() {
+  if (inSpeech) flush();
+  try { proc?.disconnect(); src?.disconnect(); } catch {}
+  stream?.getTracks().forEach(t => t.stop());
+  ctx?.close(); wakeLock?.release?.(); wakeLock = null;
+  $('level').style.width = '0%';
+}
+$('micBtn').addEventListener('click', async () => {
+  if (!listening) {
+    try { await startMic(); } catch (e) { setStatus('Microphone blocked: ' + e.message); return; }
+    listening = true; $('micBtn').classList.add('on'); $('micBtn').setAttribute('aria-label', 'Stop listening');
+    setStatus(`Listening for ${LANG_LABEL($('lang').value)}… pause briefly between sentences.`);
+  } else {
+    stopMic(); listening = false; $('micBtn').classList.remove('on'); $('micBtn').setAttribute('aria-label', 'Start listening');
+    setStatus('Stopped. Tap the mic to listen again.');
+  }
+});
+
+// ---------- audio file translation ----------
+$('fileBtn').addEventListener('click', () => $('fileIn').click());
+$('fileIn').addEventListener('change', async (ev) => {
+  const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
+  setStatus('Decoding ' + f.name + '…');
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = await ac.decodeAudioData(await f.arrayBuffer()); ac.close();
+    let mono = buf.getChannelData(0);
+    if (buf.numberOfChannels > 1) { const r = buf.getChannelData(1); mono = mono.map((v, i) => (v + r[i]) / 2); }
+    enqueue(resample(new Float32Array(mono), buf.sampleRate));
+    setStatus('Translating ' + f.name + '…');
+  } catch (e) { setStatus('Could not read that file: ' + e.message); }
+});
+
+// ---------- transcript actions ----------
+const asText = () => entries.filter(e => !e.pending).map(e =>
+  `[${new Date(e.t).toLocaleString()}] (${LANG_LABEL(e.lang)})\n${e.en}${e.orig ? '\n  Original: ' + e.orig : ''}`).join('\n\n');
+$('copyBtn').addEventListener('click', async () => { try { await navigator.clipboard.writeText(asText()); setStatus('Copied.'); } catch { setStatus('Copy not allowed here.'); } });
+$('dlBtn').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([asText()], { type: 'text/plain' }));
+  a.download = `bhasha-setu-${new Date().toISOString().slice(0, 10)}.txt`; a.click();
+});
+$('clearBtn').addEventListener('click', () => {
+  if (confirm('Delete the whole saved conversation from this device?')) { entries = entries.filter(e => e.pending); persist(); render(); }
+});
+
+// ---------- boot ----------
+navigator.storage?.persist?.().catch(() => {}); // keep models & conversation from being evicted
+applyView(); render(); loadModel();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>

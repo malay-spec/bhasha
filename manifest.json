@@ -1,0 +1,14 @@
+{
+  "name": "Bhasha Setu – Speech to English",
+  "short_name": "Bhasha Setu",
+  "description": "Offline translation of spoken Indian languages and Mandarin into English text and speech.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#0f4c5c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
