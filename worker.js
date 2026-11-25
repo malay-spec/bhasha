@@ -41,7 +41,7 @@ function dominantScript(text) {
   return best;
 }
 
-let asr = null, asrKey = null, mt = null, device = 'wasm', loading = Promise.resolve();
+let asr = null, asrKey = null, mt = null, mtLoading = null, device = 'wasm', loading = Promise.resolve();
 
 async function hasWebGPU() {
   try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch { return false; }
@@ -58,7 +58,8 @@ function tracker(label) {
   };
 }
 
-async function load(model, mode, loadId) {
+// Speech model (needed in both modes)
+async function load(model, loadId) {
   device = (await hasWebGPU()) ? 'webgpu' : 'wasm';
   const key = model + ':' + device;
   if (!asr || asrKey !== key) {
@@ -72,12 +73,16 @@ async function load(model, mode, loadId) {
     });
     asrKey = key;
   }
-  if (mode === 'accurate' && !mt) {
-    self.postMessage({ type: 'status', text: 'Loading translator (NLLB-200)…' });
-    // NLLB runs on WASM: its quantized weights are the most reliable there across devices.
-    mt = await pipeline('translation', MT_MODEL, { device: 'wasm', dtype: 'q8', progress_callback: tracker('Translator') });
-  }
-  self.postMessage({ type: 'ready', loadId, device: device === 'webgpu' ? 'GPU (WebGPU)' : 'CPU', mode });
+  self.postMessage({ type: 'ready', loadId, device: device === 'webgpu' ? 'GPU (WebGPU)' : 'CPU' });
+}
+
+// Translator for Accurate mode. Loads in the background; Fast mode keeps working meanwhile.
+function loadMT() {
+  if (mt) { self.postMessage({ type: 'mt-ready' }); return; }
+  if (mtLoading) return;
+  mtLoading = pipeline('translation', MT_MODEL, { device: 'wasm', dtype: 'q8', progress_callback: tracker('Accurate-mode translator') })
+    .then((m) => { mt = m; self.postMessage({ type: 'mt-ready' }); })
+    .catch((e) => { mtLoading = null; self.postMessage({ type: 'mt-error', text: String((e && e.message) || e) }); });
 }
 
 async function whisper(audio, language, task) {
@@ -90,7 +95,7 @@ async function processAudio({ audio, language, mode, showOriginal }) {
   if (mode !== 'accurate' || !mt) {
     const english = await whisper(audio, language, 'translate');
     const original = showOriginal ? await whisper(audio, language, 'transcribe') : '';
-    return { english, original, via: 'whisper' };
+    return { english, original, via: mode === 'accurate' ? 'fast-while-downloading' : 'whisper' };
   }
   const original = await whisper(audio, language, 'transcribe');
   const script = dominantScript(original);
@@ -99,7 +104,7 @@ async function processAudio({ audio, language, mode, showOriginal }) {
     // Whisper wrote it in the wrong script (common for Punjabi): use direct speech translation.
     return { english: await whisper(audio, language, 'translate'), original, via: 'whisper-fallback' };
   }
-  if (script.code === 'eng_Latn') return { english: original, original: '', via: 'already-english' };
+  if (script.code === 'eng_Latn') return { english: original, original: '', via: 'nllb' };
   let src = script.code;
   if (script.name === 'devanagari' && language === 'marathi') src = 'mar_Deva';
   const out = await mt(original, { src_lang: src, tgt_lang: 'eng_Latn', max_new_tokens: 256 });
@@ -109,9 +114,11 @@ async function processAudio({ audio, language, mode, showOriginal }) {
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'load') {
-      await (loading = load(data.model, data.mode, data.loadId));
+      await (loading = load(data.model, data.loadId));
+    } else if (data.type === 'loadMT') {
+      loadMT();
     } else if (data.type === 'process') {
-      await loading.catch(() => {}); // never process while a model switch is in progress
+      await loading.catch(() => {}); // never process while the speech model is switching
       const t0 = performance.now();
       const r = await processAudio(data);
       self.postMessage({ type: 'result', id: data.id, ...r, ms: Math.round(performance.now() - t0) });

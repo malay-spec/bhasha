@@ -1,6 +1,6 @@
 // Offline support: app shell + the in-browser AI runtime are cached on first visit.
 // Model weights are cached separately by transformers.js (Cache Storage "transformers-cache").
-const CACHE = 'bhasha-setu-v1';
+const CACHE = 'bhasha-setu-v2';
 const SHELL = ['./', './index.html', './worker.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

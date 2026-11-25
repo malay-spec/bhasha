@@ -52,6 +52,11 @@
   .empty { color:var(--muted); text-align:center; padding:18px; font-size:.9rem; }
   .note { font-size:.8rem; color:var(--muted); }
   input[type=file] { display:none; }
+  .seg { display:inline-flex; border:1px solid var(--brand); border-radius:999px; overflow:hidden; }
+  .seg button { border:none; background:none; padding:9px 22px; font:inherit; font-weight:600; color:var(--brand); cursor:pointer; }
+  .seg button[aria-checked=true] { background:var(--brand); color:#fff; }
+  #modeHint { text-align:center; max-width:420px; }
+  .tag { font-size:.7rem; padding:1px 6px; border-radius:6px; background:var(--line); margin-left:4px; }
 </style>
 </head>
 <body>
@@ -80,18 +85,11 @@
         </select>
       </div>
       <div>
-        <label for="model">Offline model (downloaded once)</label>
+        <label for="model">Speech model (change any time)</label>
         <select id="model">
           <option value="onnx-community/whisper-tiny">Tiny · ~40 MB · fastest, rough</option>
           <option value="onnx-community/whisper-base" selected>Base · ~80 MB · balanced</option>
           <option value="onnx-community/whisper-small">Small · ~250 MB · best accuracy</option>
-        </select>
-      </div>
-      <div style="grid-column:1/-1">
-        <label for="mode">Translation engine</label>
-        <select id="mode">
-          <option value="fast">Fast · speech model translates directly (best for phones)</option>
-          <option value="accurate">Accurate · speech model + NLLB-200 translator (+~900 MB, best on laptops)</option>
         </select>
       </div>
     </div>
@@ -103,6 +101,11 @@
   </section>
 
   <section class="card mic-wrap">
+    <div class="seg" role="radiogroup" aria-label="Translation quality">
+      <button data-mode="accurate" role="radio">Accurate</button>
+      <button data-mode="fast" role="radio">Fast</button>
+    </div>
+    <div class="note" id="modeHint"></div>
     <button id="micBtn" aria-label="Start listening" disabled>
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
     </button>
@@ -141,18 +144,20 @@ const store = {
 };
 let entries = store.get(STORE, []);
 const prefs = store.get(PREFS, {});
-for (const [id, key] of [['lang','lang'],['model','model'],['mode','mode']]) if (prefs[key]) $(id).value = prefs[key];
+for (const [id, key] of [['lang','lang'],['model','model']]) if (prefs[key]) $(id).value = prefs[key];
+let mode = prefs.mode || 'accurate';   // Accurate is the default
 for (const id of ['optText','optSpeak','optOrig']) if (id in prefs) $(id).checked = prefs[id];
 function savePrefs() {
-  store.set(PREFS, { lang:$('lang').value, model:$('model').value, mode:$('mode').value,
+  store.set(PREFS, { lang:$('lang').value, model:$('model').value, mode,
     optText:$('optText').checked, optSpeak:$('optSpeak').checked, optOrig:$('optOrig').checked });
   applyView();
 }
 ['lang','optText','optSpeak','optOrig'].forEach(id => $(id).addEventListener('change', savePrefs));
-['model','mode'].forEach(id => $(id).addEventListener('change', () => { savePrefs(); loadModel(); }));
+$('model').addEventListener('change', () => { savePrefs(); loadModel(); });
 
 // ---------- rendering ----------
 const LANG_LABEL = (v) => $('lang').querySelector(`option[value="${v}"]`)?.textContent.split(' (')[0] || v;
+const VIA = { 'whisper': 'Fast', 'fast-while-downloading': 'Fast', 'nllb': 'Accurate', 'whisper-fallback': 'Accurate' };
 function applyView() {
   $('log').classList.toggle('hide-text', !$('optText').checked);
   $('log').classList.toggle('hide-orig', !$('optOrig').checked);
@@ -164,7 +169,7 @@ function render() {
   for (const e of entries) {
     const d = document.createElement('div');
     d.className = 'entry' + (e.pending ? ' pending' : '');
-    d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}</span>
+    d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}${e.via ? `<span class="tag">${VIA[e.via] || ''}</span>` : ''}</span>
       ${e.pending ? '' : '<button class="speak">🔊 Play</button>'}</div>
       <div class="en"></div><div class="orig"></div>`;
     d.querySelector('.en').textContent = e.pending ? 'Translating…' : (e.en || '(no speech recognised)');
@@ -193,26 +198,54 @@ function speak(text, force) {
 
 // ---------- worker / model ----------
 const worker = new Worker('worker.js', { type: 'module' });
-let ready = false, busy = false, nextId = 1, loadId = 0;
+let ready = false, busy = false, nextId = 1, loadId = 0, mtReady = false, mtLoading = false;
 const queue = [];
 function setStatus(t) { $('status').textContent = t; }
 function loadModel() {
   ready = false; $('micBtn').disabled = true;
   $('bar').style.display = 'block'; $('barFill').style.width = '0%';
-  worker.postMessage({ type: 'load', loadId: ++loadId, model: $('model').value, mode: $('mode').value });
+  worker.postMessage({ type: 'load', loadId: ++loadId, model: $('model').value });
 }
+
+// ---------- Fast / Accurate switch (change any time, even while listening) ----------
+function setMode(m) {
+  mode = m; savePrefs();
+  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-checked', b.dataset.mode === m));
+  if (m === 'accurate' && !mtReady && !mtLoading) { mtLoading = true; worker.postMessage({ type: 'loadMT' }); }
+  updateHint();
+}
+function updateHint() {
+  $('modeHint').textContent = mode === 'fast'
+    ? 'Fast: quickest replies, lighter on the phone. Switch to Accurate any time.'
+    : mtReady ? 'Accurate: better English, a little slower. Switch to Fast any time.'
+              : 'Accurate: downloading the translator once (~900 MB, Wi-Fi recommended). Fast is used until it is ready.';
+}
+document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
 worker.onmessage = ({ data }) => {
   if (data.type === 'status') setStatus(data.text);
-  else if (data.type === 'progress') { $('barFill').style.width = data.pct + '%'; setStatus(`Downloading ${data.label} (${data.mb} MB)… ${data.pct}% · one-time`); }
+  else if (data.type === 'progress') {
+    $('bar').style.display = 'block'; $('barFill').style.width = data.pct + '%';
+    setStatus(`Downloading ${data.label} (${data.mb} MB)… ${data.pct}% · one-time`);
+  }
+  else if (data.type === 'mt-ready') {
+    mtReady = true; mtLoading = false; updateHint();
+    if (ready) { $('bar').style.display = 'none'; setStatus(listening ? 'Accurate mode ready · listening…' : 'Accurate mode ready · works offline. Tap the mic.'); }
+  }
+  else if (data.type === 'mt-error') {
+    mtLoading = false; setMode('fast');
+    $('bar').style.display = 'none';
+    setStatus('Accurate mode could not load on this device (' + data.text.slice(0, 80) + '). Using Fast.');
+  }
   else if (data.type === 'ready') {
     if (data.loadId !== loadId) return; // an older load finished; a newer one is still running
-    ready = true; $('micBtn').disabled = false; $('bar').style.display = 'none';
-    setStatus(`Ready · works offline · ${data.mode === 'accurate' ? 'Accurate' : 'Fast'} mode on ${data.device}. Tap the mic.`); pump();
+    ready = true; $('micBtn').disabled = false;
+    if (!mtLoading) $('bar').style.display = 'none';
+    setStatus(mtLoading ? 'Ready (Fast) · Accurate translator still downloading…' : `Ready · works offline on ${data.device}. Tap the mic.`); pump();
   } else if (data.type === 'result' || data.type === 'error') {
     const e = entries.find(x => x.id === data.id);
     if (e) {
       e.pending = false;
-      if (data.type === 'result') { e.en = data.english; e.orig = data.original; e.ms = data.ms; speak(e.en); }
+      if (data.type === 'result') { e.en = data.english; e.orig = data.original; e.ms = data.ms; e.via = data.via; speak(e.en); }
       else e.en = '⚠ ' + data.text;
       if (!e.en) entries = entries.filter(x => x !== e);
       persist(); render();
@@ -233,7 +266,7 @@ function pump() {
   if (!ready || busy || !queue.length) return;
   busy = true;
   const { id, audio } = queue.shift();
-  worker.postMessage({ type: 'process', id, audio, language: $('lang').value, mode: $('mode').value, showOriginal: $('optOrig').checked }, [audio.buffer]);
+  worker.postMessage({ type: 'process', id, audio, language: $('lang').value, mode, showOriginal: $('optOrig').checked }, [audio.buffer]);
 }
 
 // ---------- audio helpers ----------
@@ -338,7 +371,7 @@ $('clearBtn').addEventListener('click', () => {
 
 // ---------- boot ----------
 navigator.storage?.persist?.().catch(() => {}); // keep models & conversation from being evicted
-applyView(); render(); loadModel();
+applyView(); render(); loadModel(); setMode(mode);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
