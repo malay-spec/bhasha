@@ -1,6 +1,6 @@
 // Offline support: app shell + the in-browser AI runtime are cached on first visit.
 // Model weights are cached separately by transformers.js (Cache Storage "transformers-cache").
-const CACHE = 'bhasha-setu-v2';
+const CACHE = 'bhasha-setu-v3';
 const SHELL = ['./', './index.html', './worker.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -22,7 +22,10 @@ self.addEventListener('fetch', (e) => {
     // App shell: network-first (get updates), fall back to cache offline. Runtime: cache-first.
     if (isRuntime && hit) return hit;
     try {
-      const res = await fetch(e.request);
+      // Don't let a slow mobile network hold the app hostage: use the cached copy after 3 s.
+      const net = fetch(e.request);
+      const res = hit ? await Promise.race([net, new Promise((r) => setTimeout(() => r(hit), 3000))]) : await net;
+      if (res === hit) { net.then((r) => r.ok && cache.put(e.request, r)).catch(() => {}); return hit; }
       if (res.ok) cache.put(e.request, res.clone());
       return res;
     } catch (err) {

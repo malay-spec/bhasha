@@ -89,7 +89,7 @@
         <select id="model">
           <option value="onnx-community/whisper-tiny">Tiny · ~40 MB · fastest, rough</option>
           <option value="onnx-community/whisper-base" selected>Base · ~80 MB · balanced</option>
-          <option value="onnx-community/whisper-small">Small · ~250 MB · best accuracy</option>
+          <option value="onnx-community/whisper-small">Small · ~250 MB · best accuracy (laptops)</option>
         </select>
       </div>
     </div>
@@ -145,6 +145,12 @@ const store = {
 let entries = store.get(STORE, []);
 const prefs = store.get(PREFS, {});
 for (const [id, key] of [['lang','lang'],['model','model']]) if (prefs[key]) $(id).value = prefs[key];
+// Phones / low-memory devices get the light translator and smaller defaults, so the page is not killed by Android.
+const IS_PHONE = navigator.userAgentData?.mobile ?? /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+const LOW_MEM = IS_PHONE || (navigator.deviceMemory && navigator.deviceMemory < 8);
+const MT_KIND = LOW_MEM ? 'light' : 'full';
+const MT_SIZE = MT_KIND === 'light' ? '~110 MB' : '~900 MB';
+if (!prefs.model && IS_PHONE) $('model').value = 'onnx-community/whisper-base';
 let mode = prefs.mode || 'accurate';   // Accurate is the default
 for (const id of ['optText','optSpeak','optOrig']) if (id in prefs) $(id).checked = prefs[id];
 function savePrefs() {
@@ -166,7 +172,7 @@ function render() {
   const log = $('log');
   if (!entries.length) { log.innerHTML = '<div class="empty">Tap the mic and start speaking. English will appear here.</div>'; return; }
   log.innerHTML = '';
-  for (const e of entries) {
+  for (const e of entries.slice(-150)) { // only draw the latest 150 for speed; all are kept & downloadable
     const d = document.createElement('div');
     d.className = 'entry' + (e.pending ? ' pending' : '');
     d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}${e.via ? `<span class="tag">${VIA[e.via] || ''}</span>` : ''}</span>
@@ -211,14 +217,15 @@ function loadModel() {
 function setMode(m) {
   mode = m; savePrefs();
   document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-checked', b.dataset.mode === m));
-  if (m === 'accurate' && !mtReady && !mtLoading) { mtLoading = true; worker.postMessage({ type: 'loadMT' }); }
+  if (m === 'accurate' && !mtReady && !mtLoading) { mtLoading = true; worker.postMessage({ type: 'loadMT', kind: MT_KIND }); }
+  if (m === 'fast' && LOW_MEM && mtReady) { mtReady = false; worker.postMessage({ type: 'unloadMT' }); } // free memory on phones
   updateHint();
 }
 function updateHint() {
   $('modeHint').textContent = mode === 'fast'
     ? 'Fast: quickest replies, lighter on the phone. Switch to Accurate any time.'
     : mtReady ? 'Accurate: better English, a little slower. Switch to Fast any time.'
-              : 'Accurate: downloading the translator once (~900 MB, Wi-Fi recommended). Fast is used until it is ready.';
+              : `Accurate: preparing the translator (${MT_SIZE}, downloaded once). Fast is used until it is ready.`;
 }
 document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
 worker.onmessage = ({ data }) => {

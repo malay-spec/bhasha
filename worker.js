@@ -11,7 +11,11 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transfo
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
-const MT_MODEL = 'Xenova/nllb-200-distilled-600M';
+// Two translators for Accurate mode:
+//   full  – NLLB-200 (~900 MB download, ~3 GB RAM): laptops/desktops only
+//   light – OPUS-MT many-languages→English (~110 MB, ~300 MB RAM): phones and low-memory devices
+const MT_MODELS = { full: 'Xenova/nllb-200-distilled-600M', light: 'Xenova/opus-mt-mul-en' };
+let mtKind = null;
 
 // Unicode script ranges → NLLB language codes
 const SCRIPTS = [
@@ -77,12 +81,20 @@ async function load(model, loadId) {
 }
 
 // Translator for Accurate mode. Loads in the background; Fast mode keeps working meanwhile.
-function loadMT() {
-  if (mt) { self.postMessage({ type: 'mt-ready' }); return; }
+function loadMT(kind) {
+  if (mt && mtKind === kind) { self.postMessage({ type: 'mt-ready' }); return; }
   if (mtLoading) return;
-  mtLoading = pipeline('translation', MT_MODEL, { device: 'wasm', dtype: 'q8', progress_callback: tracker('Accurate-mode translator') })
-    .then((m) => { mt = m; self.postMessage({ type: 'mt-ready' }); })
-    .catch((e) => { mtLoading = null; self.postMessage({ type: 'mt-error', text: String((e && e.message) || e) }); });
+  mtLoading = (async () => {
+    await unloadMT();
+    const m = await pipeline('translation', MT_MODELS[kind], { device: 'wasm', dtype: 'q8', progress_callback: tracker('Accurate-mode translator') });
+    mt = m; mtKind = kind; mtLoading = null;
+    self.postMessage({ type: 'mt-ready' });
+  })().catch((e) => { mtLoading = null; self.postMessage({ type: 'mt-error', text: String((e && e.message) || e) }); });
+}
+// Free the translator's memory (used on phones when switching to Fast)
+async function unloadMT() {
+  if (mt) { try { await mt.dispose(); } catch {} }
+  mt = null; mtKind = null;
 }
 
 async function whisper(audio, language, task) {
@@ -105,9 +117,14 @@ async function processAudio({ audio, language, mode, showOriginal }) {
     return { english: await whisper(audio, language, 'translate'), original, via: 'whisper-fallback' };
   }
   if (script.code === 'eng_Latn') return { english: original, original: '', via: 'nllb' };
-  let src = script.code;
-  if (script.name === 'devanagari' && language === 'marathi') src = 'mar_Deva';
-  const out = await mt(original, { src_lang: src, tgt_lang: 'eng_Latn', max_new_tokens: 256 });
+  let out;
+  if (mtKind === 'light') {
+    out = await mt(original, { max_new_tokens: 256 });
+  } else {
+    let src = script.code;
+    if (script.name === 'devanagari' && language === 'marathi') src = 'mar_Deva';
+    out = await mt(original, { src_lang: src, tgt_lang: 'eng_Latn', max_new_tokens: 256 });
+  }
   return { english: (out[0]?.translation_text || '').trim(), original, via: 'nllb' };
 }
 
@@ -116,7 +133,9 @@ self.onmessage = async ({ data }) => {
     if (data.type === 'load') {
       await (loading = load(data.model, data.loadId));
     } else if (data.type === 'loadMT') {
-      loadMT();
+      loadMT(data.kind);
+    } else if (data.type === 'unloadMT') {
+      if (!mtLoading) await unloadMT();
     } else if (data.type === 'process') {
       await loading.catch(() => {}); // never process while the speech model is switching
       const t0 = performance.now();
