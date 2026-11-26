@@ -6,7 +6,7 @@
 //   accurate – Whisper writes down the speech in its own script, then NLLB-200 (Meta's
 //              200-language translator) translates it to English. Falls back to "fast"
 //              automatically when Whisper's transcript comes out in the wrong script.
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
+import { pipeline, env, Tensor } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
@@ -63,8 +63,8 @@ function tracker(label) {
 }
 
 // Speech model (needed in both modes)
-async function load(model, loadId) {
-  device = (await hasWebGPU()) ? 'webgpu' : 'wasm';
+async function load(model, loadId, forceWasm) {
+  device = (!forceWasm && await hasWebGPU()) ? 'webgpu' : 'wasm';
   const key = model + ':' + device;
   if (!asr || asrKey !== key) {
     if (asr) { try { await asr.dispose(); } catch {} asr = null; }
@@ -103,15 +103,55 @@ async function whisper(audio, language, task) {
   return ((await asr(audio, opts)).text || '').trim();
 }
 
-async function processAudio({ audio, language, mode, showOriginal }) {
+// Real language detection: ask Whisper which language token is most likely,
+// limited to the languages this app supports (avoids random guesses).
+const DETECT = { pa: 'punjabi', mr: 'marathi', ta: 'tamil', te: 'telugu', kn: 'kannada', zh: 'chinese',
+  bn: 'bengali', gu: 'gujarati', ml: 'malayalam', hi: 'hindi', ur: 'urdu', en: 'english' };
+async function detectLanguage(audio) {
+  const tok = asr.tokenizer.model.tokens_to_ids;
+  const { input_features } = await asr.processor(audio.subarray(0, 16000 * 30));
+  const sot = tok.get('<|startoftranscript|>');
+  const out = await asr.model({ input_features, decoder_input_ids: new Tensor('int64', [BigInt(sot)], [1, 1]) });
+  const logits = out.logits.data;
+  return Object.entries(DETECT)
+    .map(([code, name]) => ({ name, score: logits[tok.get(`<|${code}|>`)] ?? -Infinity }))
+    .sort((a, b) => b.score - a.score);
+}
+
+async function processAudio(req) {
+  let { audio, language } = req;
+  let detected = null;
+  let pre = null;
+  if (language === 'auto') {
+    const ranked = await detectLanguage(audio);
+    if (ranked[0].name === 'english') {
+      const text = await whisper(audio, 'english', 'transcribe');
+      return { english: text, original: '', via: 'whisper', detected: 'english' };
+    }
+    // Similar-sounding languages (e.g. Tamil/Kannada) score close together. Confirm by
+    // transcribing with each close candidate and keeping the one written in its own script.
+    const close = ranked.filter((c) => c.score > ranked[0].score - 2 && EXPECTED[c.name]).slice(0, 3);
+    language = ranked[0].name;
+    if (close.length > 1) {
+      for (const c of close) {
+        const t = await whisper(audio, c.name, 'transcribe');
+        if (dominantScript(t)?.name === EXPECTED[c.name]) { language = c.name; pre = t; break; }
+      }
+    }
+    detected = language;
+  }
+  return { ...(await translateAudio({ ...req, language, pre })), detected };
+}
+
+async function translateAudio({ audio, language, mode, showOriginal, pre }) {
   if (mode !== 'accurate' || !mt) {
     const english = await whisper(audio, language, 'translate');
-    const original = showOriginal ? await whisper(audio, language, 'transcribe') : '';
+    const original = showOriginal ? (pre ?? await whisper(audio, language, 'transcribe')) : '';
     return { english, original, via: mode === 'accurate' ? 'fast-while-downloading' : 'whisper' };
   }
-  const original = await whisper(audio, language, 'transcribe');
+  const original = pre ?? await whisper(audio, language, 'transcribe');
   const script = dominantScript(original);
-  const ok = script && (language === 'auto' ? true : script.name === EXPECTED[language]);
+  const ok = script && EXPECTED[language] && script.name === EXPECTED[language];
   if (!ok) {
     // Whisper wrote it in the wrong script (common for Punjabi): use direct speech translation.
     return { english: await whisper(audio, language, 'translate'), original, via: 'whisper-fallback' };
@@ -131,7 +171,7 @@ async function processAudio({ audio, language, mode, showOriginal }) {
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'load') {
-      await (loading = load(data.model, data.loadId));
+      await (loading = load(data.model, data.loadId, data.forceWasm));
     } else if (data.type === 'loadMT') {
       loadMT(data.kind);
     } else if (data.type === 'unloadMT') {
@@ -143,6 +183,10 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ type: 'result', id: data.id, ...r, ms: Math.round(performance.now() - t0) });
     }
   } catch (e) {
-    self.postMessage({ type: 'error', text: String((e && e.message) || e), id: data.id });
+    const text = String((e && e.message) || e);
+    // A bare number (or memory message) means the AI engine crashed, usually out of memory.
+    // The page restarts the engine with lighter settings when it sees fatal: true.
+    const fatal = /^\d+$/.test(text.trim()) || /memory|allocation|abort/i.test(text);
+    self.postMessage({ type: 'error', text, fatal, id: data.id });
   }
 };

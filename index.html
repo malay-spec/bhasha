@@ -142,14 +142,12 @@ const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-let entries = store.get(STORE, []);
+let entries = store.get(STORE, []).filter(e => !/^⚠ \d+$/.test(e.en || '')); // remove old crash codes
 const prefs = store.get(PREFS, {});
 for (const [id, key] of [['lang','lang'],['model','model']]) if (prefs[key]) $(id).value = prefs[key];
 // Phones / low-memory devices get the light translator and smaller defaults, so the page is not killed by Android.
 const IS_PHONE = navigator.userAgentData?.mobile ?? /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 const LOW_MEM = IS_PHONE || (navigator.deviceMemory && navigator.deviceMemory < 8);
-const MT_KIND = LOW_MEM ? 'light' : 'full';
-const MT_SIZE = MT_KIND === 'light' ? '~110 MB' : '~900 MB';
 if (!prefs.model && IS_PHONE) $('model').value = 'onnx-community/whisper-base';
 let mode = prefs.mode || 'accurate';   // Accurate is the default
 for (const id of ['optText','optSpeak','optOrig']) if (id in prefs) $(id).checked = prefs[id];
@@ -159,7 +157,7 @@ function savePrefs() {
   applyView();
 }
 ['lang','optText','optSpeak','optOrig'].forEach(id => $(id).addEventListener('change', savePrefs));
-$('model').addEventListener('change', () => { savePrefs(); loadModel(); });
+$('model').addEventListener('change', () => { savePrefs(); if (worker) loadModel(); });
 
 // ---------- rendering ----------
 const LANG_LABEL = (v) => $('lang').querySelector(`option[value="${v}"]`)?.textContent.split(' (')[0] || v;
@@ -175,7 +173,7 @@ function render() {
   for (const e of entries.slice(-150)) { // only draw the latest 150 for speed; all are kept & downloadable
     const d = document.createElement('div');
     d.className = 'entry' + (e.pending ? ' pending' : '');
-    d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}${e.via ? `<span class="tag">${VIA[e.via] || ''}</span>` : ''}</span>
+    d.innerHTML = `<div class="meta"><span>${new Date(e.t).toLocaleString()} · ${LANG_LABEL(e.lang)}${e.det ? ' → ' + (e.det[0].toUpperCase() + e.det.slice(1)) : ''}${e.via ? `<span class="tag">${VIA[e.via] || ''}</span>` : ''}</span>
       ${e.pending ? '' : '<button class="speak">🔊 Play</button>'}</div>
       <div class="en"></div><div class="orig"></div>`;
     d.querySelector('.en').textContent = e.pending ? 'Translating…' : (e.en || '(no speech recognised)');
@@ -203,77 +201,108 @@ function speak(text, force) {
 }
 
 // ---------- worker / model ----------
-const worker = new Worker('worker.js', { type: 'module' });
-let ready = false, busy = false, nextId = 1, loadId = 0, mtReady = false, mtLoading = false;
+// Self-healing engine: if the AI engine crashes (usually out of memory; it shows up as a bare number),
+// the worker is restarted with lighter settings and the sentence is retried automatically.
+const SAFE_KEY = 'bhasha-setu-safe-v1';
+let safe = store.get(SAFE_KEY, { level: 0 });          // 0 normal · 1 light translator · 2 also CPU-only
+const mtKind = () => (LOW_MEM || safe.level >= 1) ? 'light' : 'full';
+const mtSize = () => mtKind() === 'light' ? '~110 MB' : '~900 MB';
+let worker, ready = false, busy = false, nextId = 1, loadId = 0, mtReady = false, mtLoading = false, current = null;
 const queue = [];
 function setStatus(t) { $('status').textContent = t; }
+function startWorker() {
+  worker?.terminate();
+  ready = busy = mtReady = mtLoading = false;
+  worker = new Worker('worker.js?v=6', { type: 'module' });
+  worker.onmessage = onWorkerMessage;
+  loadModel();
+  if (mode === 'accurate') requestMT();
+}
 function loadModel() {
-  ready = false; $('micBtn').disabled = true;
+  ready = false; $('micBtn').disabled = !listening;
   $('bar').style.display = 'block'; $('barFill').style.width = '0%';
-  worker.postMessage({ type: 'load', loadId: ++loadId, model: $('model').value });
+  worker.postMessage({ type: 'load', loadId: ++loadId, model: $('model').value, forceWasm: safe.level >= 2 });
+}
+function requestMT() {
+  if (!mtReady && !mtLoading) { mtLoading = true; worker.postMessage({ type: 'loadMT', kind: mtKind() }); }
 }
 
 // ---------- Fast / Accurate switch (change any time, even while listening) ----------
 function setMode(m) {
   mode = m; savePrefs();
   document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-checked', b.dataset.mode === m));
-  if (m === 'accurate' && !mtReady && !mtLoading) { mtLoading = true; worker.postMessage({ type: 'loadMT', kind: MT_KIND }); }
-  if (m === 'fast' && LOW_MEM && mtReady) { mtReady = false; worker.postMessage({ type: 'unloadMT' }); } // free memory on phones
+  if (m === 'accurate' && worker) requestMT();
+  if (m === 'fast' && LOW_MEM && mtReady && worker) { mtReady = false; worker.postMessage({ type: 'unloadMT' }); } // free memory on phones
   updateHint();
 }
 function updateHint() {
   $('modeHint').textContent = mode === 'fast'
-    ? 'Fast: quickest replies, lighter on the phone. Switch to Accurate any time.'
+    ? 'Fast: quickest replies, lighter on the device. Switch to Accurate any time.'
     : mtReady ? 'Accurate: better English, a little slower. Switch to Fast any time.'
-              : `Accurate: preparing the translator (${MT_SIZE}, downloaded once). Fast is used until it is ready.`;
+              : `Accurate: preparing the translator (${mtSize()}, downloaded once). Fast is used until it is ready.`;
 }
 document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
-worker.onmessage = ({ data }) => {
+
+function onWorkerMessage({ data }) {
   if (data.type === 'status') setStatus(data.text);
   else if (data.type === 'progress') {
     $('bar').style.display = 'block'; $('barFill').style.width = data.pct + '%';
-    setStatus(`Downloading ${data.label} (${data.mb} MB)… ${data.pct}% · one-time`);
+    setStatus(`Preparing ${data.label} (${data.mb} MB)… ${data.pct}%`);
   }
   else if (data.type === 'mt-ready') {
-    mtReady = true; mtLoading = false; updateHint();
+    mtReady = true; mtLoading = false; updateHint(); pump();
     if (ready) { $('bar').style.display = 'none'; setStatus(listening ? 'Accurate mode ready · listening…' : 'Accurate mode ready · works offline. Tap the mic.'); }
   }
   else if (data.type === 'mt-error') {
-    mtLoading = false; setMode('fast');
-    $('bar').style.display = 'none';
-    setStatus('Accurate mode could not load on this device (' + data.text.slice(0, 80) + '). Using Fast.');
+    mtLoading = false; $('bar').style.display = 'none';
+    if (mtKind() === 'full') { safe.level = Math.max(safe.level, 1); store.set(SAFE_KEY, safe); requestMT(); updateHint();
+      setStatus('Large translator could not load; using the lighter one.'); }
+    else { setMode('fast'); setStatus('Accurate mode could not load on this device. Using Fast.'); }
   }
   else if (data.type === 'ready') {
     if (data.loadId !== loadId) return; // an older load finished; a newer one is still running
     ready = true; $('micBtn').disabled = false;
     if (!mtLoading) $('bar').style.display = 'none';
-    setStatus(mtLoading ? 'Ready (Fast) · Accurate translator still downloading…' : `Ready · works offline on ${data.device}. Tap the mic.`); pump();
+    if (!listening) setStatus(mtLoading ? 'Ready (Fast) · Accurate translator still downloading…' : `Ready · works offline on ${data.device}. Tap the mic.`);
+    pump();
   } else if (data.type === 'result' || data.type === 'error') {
+    const job = current; current = null; busy = false;
     const e = entries.find(x => x.id === data.id);
+    if (data.type === 'error' && data.fatal) {
+      // Engine crashed: restart lighter and retry this sentence once.
+      safe.level = Math.min(2, safe.level + 1); store.set(SAFE_KEY, safe);
+      if (job && job.tries < 2) queue.unshift({ ...job, tries: job.tries + 1 });
+      else if (e) { e.pending = false; e.en = '⚠ Could not translate this part. Please try again.'; persist(); render(); }
+      setStatus('The translator ran low on memory, so it was restarted with lighter settings…');
+      startWorker();
+      return;
+    }
     if (e) {
       e.pending = false;
-      if (data.type === 'result') { e.en = data.english; e.orig = data.original; e.ms = data.ms; e.via = data.via; speak(e.en); }
-      else e.en = '⚠ ' + data.text;
+      if (data.type === 'result') { e.en = data.english; e.orig = data.original; e.ms = data.ms; e.via = data.via; e.det = data.detected; speak(e.en); }
+      else e.en = '⚠ Could not translate this part (' + data.text.slice(0, 60) + ')';
       if (!e.en) entries = entries.filter(x => x !== e);
       persist(); render();
       if (!listening && !queue.length) setStatus('Done. Tap the mic or translate another file.');
     }
-    if (data.type === 'error' && !e) setStatus('Error: ' + data.text);
-    busy = false; pump();
+    pump();
   }
-};
+}
 function enqueue(audio) {
   const id = nextId++;
   entries.push({ id, t: Date.now(), lang: $('lang').value, pending: true });
   render();
-  queue.push({ id, audio });
+  queue.push({ id, audio, tries: 0 });
   pump();
 }
 function pump() {
   if (!ready || busy || !queue.length) return;
+  if (queue[0].tries > 0 && mode === 'accurate' && mtLoading) return; // retry after a restart: wait for the translator
+
   busy = true;
-  const { id, audio } = queue.shift();
-  worker.postMessage({ type: 'process', id, audio, language: $('lang').value, mode, showOriginal: $('optOrig').checked }, [audio.buffer]);
+  current = queue.shift();
+  const audio = current.audio.slice(); // keep the original so it can be retried after a crash
+  worker.postMessage({ type: 'process', id: current.id, audio, language: $('lang').value, mode, showOriginal: $('optOrig').checked }, [audio.buffer]);
 }
 
 // ---------- audio helpers ----------
@@ -378,7 +407,7 @@ $('clearBtn').addEventListener('click', () => {
 
 // ---------- boot ----------
 navigator.storage?.persist?.().catch(() => {}); // keep models & conversation from being evicted
-applyView(); render(); loadModel(); setMode(mode);
+applyView(); render(); setMode(mode); startWorker();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
